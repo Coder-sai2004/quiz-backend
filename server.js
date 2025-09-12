@@ -1,8 +1,16 @@
+require("dotenv").config({ path: "./mongo.env" });
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const multer = require('multer');
+const pdfParse = require('pdf-parse');
+const OpenAI = require('openai');
+const storage = multer.memoryStorage();
+const upload = multer({ storage });
+const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -14,7 +22,7 @@ app.use(express.json());
 
 // ------------------ DB CONNECTION ------------------
 mongoose.connect(
-    'mongodb+srv://ramsai123:atlas%40123@quiz.6pchbrd.mongodb.net/?retryWrites=true&w=majority&appName=quiz',
+    process.env.MONGO_URI,
     { useNewUrlParser: true, useUnifiedTopology: true }
 )
     .then(() => console.log('✅ MongoDB connected'))
@@ -120,6 +128,91 @@ const adminMiddleware = async (req, res, next) => {
 
 
 // ------------------ QUIZ ROUTES ------------------
+
+app.post('/api/extract-text', upload.single('file'), async (req, res) => {
+    try {
+        let text = req.body.text;
+
+        if (req.file) {
+            console.log("📄 Received PDF:", req.file.originalname, req.file.mimetype, req.file.size, "bytes");
+            const data = await pdfParse(req.file.buffer);
+            text = data.text;
+        }
+
+        if (!text || text.trim().length === 0) {
+            return res.status(400).json({ error: "No text could be extracted from the PDF" });
+        }
+
+        res.json({ text });
+    } catch (err) {
+        console.error("❌ Text extraction error:", err);
+        res.status(500).json({ error: "Failed to extract text" });
+    }
+});
+
+
+
+
+
+app.post('/api/generate-quiz', async (req, res) => {
+    try {
+        const { text, category = "AI Generated", difficulty = "medium" } = req.body;
+
+        const response = await client.chat.completions.create({
+            model: "gpt-4o-mini",
+            messages: [
+                { role: "system", content: "You are a quiz generator. Reply ONLY with valid JSON array. No markdown, no ```." },
+                { role: "user", content: `Generate 10 MCQs from this text:\n${text}\nFormat:\n[{"question":"...","options":["A","B","C","D"],"answer":"..."}]` }
+            ],
+            temperature: 0.7
+        });
+
+        let raw = response.choices[0].message.content.trim();
+
+        // Remove code block wrappers if AI still adds them
+        raw = raw.replace(/```json/gi, "").replace(/```/g, "");
+
+        let questions;
+        try {
+            questions = JSON.parse(raw);
+        } catch (e) {
+            console.error("❌ Failed to parse AI response:", raw);
+            return res.status(500).json({ error: "AI did not return valid quiz JSON" });
+        }
+
+        // Map into schema
+        questions = questions.map(q => {
+            const options = q.options || [q.optionA, q.optionB, q.optionC, q.optionD];
+
+            // Normalize answer: match it to actual option text
+            let correctAnswer = q.answer;
+            if (["A", "B", "C", "D"].includes(correctAnswer.toUpperCase())) {
+                const index = { A: 0, B: 1, C: 2, D: 3 }[correctAnswer.toUpperCase()];
+                correctAnswer = options[index];
+            }
+
+            return {
+                category,
+                difficulty,
+                question: q.question,
+                optionA: options[0],
+                optionB: options[1],
+                optionC: options[2],
+                optionD: options[3],
+                answer: correctAnswer  // ✅ always actual text
+            };
+        });
+
+
+        res.json(questions);
+    } catch (err) {
+        console.error("AI generation error:", err);
+        res.status(500).json({ error: "Failed to generate quiz" });
+    }
+});
+
+
+
 
 // Save quiz result
 app.post('/quiz/save', authMiddleware, async (req, res) => {
