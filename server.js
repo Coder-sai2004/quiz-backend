@@ -1,4 +1,3 @@
-require("dotenv").config({ path: "./mongo.env" });
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -425,3 +424,4 @@ app.get('/ping', (req, res) => res.send('pong'));
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
 });
+
