@@ -1,3 +1,4 @@
+require("dotenv").config({ path: "./mongo.env" });
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -207,6 +208,89 @@ app.post('/api/generate-quiz', async (req, res) => {
     } catch (err) {
         console.error("AI generation error:", err);
         res.status(500).json({ error: "Failed to generate quiz" });
+    }
+});
+
+
+
+// In server.js
+
+// ------------------ PERFORMANCE ANALYSIS (AI) ------------------
+app.post('/api/performance-analysis', async (req, res) => {
+    const { score, total, answers } = req.body;
+
+    if (!answers || answers.length === 0) {
+        return res.status(400).json({ error: 'No answers provided for analysis.' });
+    }
+
+    // 1. Format the user's answers for the AI prompt
+    const formattedAnswers = answers.map((ans, index) => {
+        const result = (ans.selected && ans.selected.toLowerCase() === ans.correct.toLowerCase()) ? 'Correct' : 'Incorrect';
+        return `${index + 1}. Question: "${ans.question}"
+   - Your Answer: "${ans.selected || 'Skipped'}"
+   - Correct Answer: "${ans.correct}"
+   - Result: ${result}`;
+    }).join('\n\n');
+
+    // 2. The detailed "expert technical assessor" prompt
+    const prompt = `
+        You are an expert technical assessor writing a concise performance report based on a user's quiz results.
+        The user's final score was ${score} out of ${total}.
+        Here is the question-by-question breakdown:
+        ${formattedAnswers}
+
+        Analyze this performance and generate a report in a strict JSON format. The tone should be professional and analytical.
+
+        The JSON object MUST have the following three keys:
+        1. "strengths": A single, well-written paragraph (as a string) summarizing the user's strong points. Mention specific concepts or topics they answered correctly. For example: "The candidate demonstrates a good understanding of fundamental data structures, correctly answering questions on Hash Tables, Stacks, and the concept of FIFO/LIFO."
+        
+        2. "improvements": A single, well-written paragraph (as a string) summarizing the user's weak points. Mention specific concepts they struggled with. For example: "The candidate struggles with some aspects of sorting algorithms, especially the time complexities and specific characteristics of algorithms like Insertion Sort and Quick Sort."
+
+        3. "recommendedTopics": An array of 2-3 JSON objects. Each object must have a "title" (a string for the topic name) and a "description" (a string explaining why the topic is recommended and what to focus on). For example: 
+           [
+             {
+               "title": "Sorting Algorithms",
+               "description": "The candidate showed confusion on the properties and time complexities of sorting algorithms, specifically Insertion Sort and Quick Sort. A deeper understanding will improve their ability to choose the right algorithm for different situations."
+             },
+             {
+               "title": "Time Complexity Analysis",
+               "description": "The candidate had some issues with time complexity. Improving this will help them understand the efficiency of different algorithms."
+             }
+           ]
+
+        Your entire response must be ONLY the valid JSON object, with no other text.
+    `;
+
+    try {
+        // 3. Call the OpenAI API and enforce JSON output
+        const completion = await client.chat.completions.create({
+            model: "gpt-4o-mini",
+            messages: [{ role: "user", content: prompt }],
+            response_format: { type: "json_object" },
+        });
+
+        const rawResponse = completion.choices[0].message.content;
+        const analysis = JSON.parse(rawResponse);
+
+        // 4. Process the detailed 'recommendedTopics' array to add search links
+        const recommendedTopicsWithLinks = analysis.recommendedTopics.map(topic => {
+            return {
+                title: topic.title,
+                description: topic.description,
+                link: 'https://www.google.com/search?q=' + encodeURIComponent(topic.title)
+            };
+        });
+
+        // 5. Send the final, structured response to the frontend
+        res.json({
+            strengths: analysis.strengths,
+            improvements: analysis.improvements,
+            recommendedTopics: recommendedTopicsWithLinks,
+        });
+
+    } catch (error) {
+        console.error("Error in performance analysis route:", error);
+        res.status(500).json({ error: "Failed to generate performance analysis." });
     }
 });
 
