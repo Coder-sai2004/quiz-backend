@@ -6,6 +6,7 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
 const OpenAI = require('openai');
+const QuizSession = require('./models/QuizSession');
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -376,6 +377,108 @@ app.post('/api/questions/add', authMiddleware, adminMiddleware, async (req, res)
     } catch (err) {
         console.error("❌ Add question error:", err);
         res.status(500).json({ error: "Failed to add question" });
+    }
+});
+
+
+// POST /api/create-session
+app.post('/api/create-session', async (req, res) => {
+    try {
+        const { username, quizData } = req.body;
+
+        if (!username || !quizData) {
+            return res.status(400).json({ message: 'Username and quizData required' });
+        }
+
+        // Generate 6-character code
+        const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+
+        const session = new QuizSession({
+            code,
+            creator: username,
+            quizData
+        });
+
+        await session.save();
+
+        res.json({ code });
+    } catch (error) {
+        console.error('Error creating session:', error);
+        res.status(500).json({ message: 'Server error creating session' });
+    }
+});
+
+// GET /api/session/:code
+app.get('/api/session/:code', async (req, res) => {
+    try {
+        const { code } = req.params;
+        const session = await QuizSession.findOne({ code });
+
+        if (!session) {
+            return res.status(404).json({ message: 'Invalid code or session not found' });
+        }
+
+        res.json({ quizData: session.quizData });
+    } catch (error) {
+        console.error('Error fetching session:', error);
+        res.status(500).json({ message: 'Server error fetching session' });
+    }
+});
+
+
+// POST /api/session/:code/submit
+app.post('/api/session/:code/submit', async (req, res) => {
+    try {
+        const { username, score } = req.body;
+        const { code } = req.params;
+
+        const session = await QuizSession.findOne({ code });
+        if (!session) {
+            return res.status(404).json({ message: 'Session not found' });
+        }
+
+        // Prevent duplicate submissions
+        const alreadyPlayed = session.participants.find(p => p.username === username);
+        if (alreadyPlayed) {
+            alreadyPlayed.score = score; // Update if re-submitted
+            alreadyPlayed.finishedAt = new Date();
+        } else {
+            session.participants.push({ username, score });
+        }
+
+        await session.save();
+        res.json({ message: 'Score submitted successfully' });
+    } catch (error) {
+        console.error('Error submitting score:', error);
+        res.status(500).json({ message: 'Server error submitting score' });
+    }
+});
+
+
+// GET /api/session/:code/leaderboard
+app.get('/api/session/:code/leaderboard', async (req, res) => {
+    try {
+        const { code } = req.params;
+        const session = await QuizSession.findOne({ code });
+
+        if (!session) {
+            return res.status(404).json({ message: 'Session not found' });
+        }
+
+        // Sort by score descending
+        const leaderboard = session.participants
+            .sort((a, b) => b.score - a.score)
+            .map((p, i) => ({
+                rank: i + 1,
+                username: p.username,
+                score: p.score,
+                finishedAt: p.finishedAt
+            }));
+
+        res.json({ code, leaderboard });
+    } catch (error) {
+        console.error('Error fetching leaderboard:', error);
+        res.status(500).json({ message: 'Server error fetching leaderboard' });
     }
 });
 
